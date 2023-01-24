@@ -3,7 +3,10 @@ use std::mem;
 use std::slice;
 
 use crate::error::{Error, Result};
-use crate::{Map, Sample};
+use crate::{
+    Map, MapIter, MapIterable, Sample,
+    bpf_map_get, bpf_map_get_next_key, bpf_map_set
+};
 use libbpf_sys::{
     BPF_ANY, BPF_MAP_TYPE_DEVMAP, XDP_FLAGS_DRV_MODE, XDP_FLAGS_HW_MODE, XDP_FLAGS_MASK,
     XDP_FLAGS_MODES, XDP_FLAGS_SKB_MODE, XDP_FLAGS_UPDATE_IF_NOEXIST,
@@ -74,8 +77,8 @@ pub struct DevMap<'a> {
     base: &'a Map,
 }
 
-impl<'a> DevMap<'a> {
-    pub fn new(base: &'a Map) -> Result<DevMap<'a>> {
+impl<'base> DevMap<'base> {
+    pub fn new(base: &'base Map) -> Result<DevMap<'base>> {
         if mem::size_of::<u32>() != base.config.key_size as usize
             || mem::size_of::<u32>() != base.config.value_size as usize
             || (BPF_MAP_TYPE_DEVMAP != base.config.type_)
@@ -90,20 +93,19 @@ impl<'a> DevMap<'a> {
         Ok(DevMap { base })
     }
 
-    pub fn set(&mut self, mut idx: u32, mut interface_index: u32) -> Result<()> {
-        let ret = unsafe {
-            libbpf_sys::bpf_map_update_elem(
-                self.base.fd,
-                &mut idx as *mut _ as *mut _ as *mut _,
-                &mut interface_index as *mut _ as *mut _,
-                BPF_ANY.into(), // No condition on the existence of the entry for `idx`.
-            )
-        };
-        if ret < 0 {
-            Err(Error::Map)
-        } else {
-            Ok(())
+    pub fn get(&self, idx: u32) -> Option<u32> {
+        bpf_map_get(self.base.fd, idx)
+    }
+
+    pub fn iter<'a>(&'a self) -> MapIter<'a, u32, u32> {
+        MapIter {
+            iterable: self,
+            last_key: None,
         }
+    }
+
+    pub fn set(&mut self, idx: u32, interface_index: u32) -> Result<()> {
+        bpf_map_set(self.base.fd, idx, interface_index)
     }
 
     pub fn delete(&mut self, mut idx: u32) -> Result<()> {
@@ -114,5 +116,15 @@ impl<'a> DevMap<'a> {
         } else {
             Ok(())
         }
+    }
+}
+
+impl MapIterable<u32, u32> for DevMap<'_> {
+    fn get(&self, key: u32) -> Option<u32> {
+        DevMap::get(self, key)
+    }
+
+    fn next_key(&self, key: Option<u32>) -> Option<u32> {
+        bpf_map_get_next_key(self.base.fd, key)
     }
 }
